@@ -1,4 +1,4 @@
-# Opearing Systems - Ex3 - Basic test suite
+# Operating Systems - Ex3 - Basic test suite
 This test suite was originally created by Mattan two years ago.
 This test repo is forked to enable changes if needed.
 ## Instructions:
