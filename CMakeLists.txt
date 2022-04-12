@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.1)
 
-project(mattanTester VERSION 1.0 LANGUAGES C CXX)
+project(tests VERSION 1.0 LANGUAGES C CXX)
 
 
 #######################################
@@ -41,13 +41,13 @@ endif()
 
 #######################################
 
-add_executable(mattanTester SampleClient.cpp)
-target_include_directories(mattanTester PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../)
-target_link_libraries(mattanTester PRIVATE MapReduceFramework gtest_main)
+add_executable(testRunner SampleClient.cpp)
+target_include_directories(testRunner PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../)
+target_link_libraries(testRunner PRIVATE MapReduceFramework gtest_main)
 
 
-set_property(TARGET mattanTester PROPERTY CXX_STANDARD 11)
-target_compile_options(mattanTester PUBLIC -Wall -Wextra)
+set_property(TARGET testRunner PROPERTY CXX_STANDARD 11)
+target_compile_options(testRunner PUBLIC -Wall -Wextra)
 
-target_compile_definitions(mattanTester PUBLIC RANDOM_STRINGS_PATH="${CMAKE_CURRENT_SOURCE_DIR}/randomstring.txt")
+target_compile_definitions(testRunner PUBLIC RANDOM_STRINGS_PATH="${CMAKE_CURRENT_SOURCE_DIR}/randomstring.txt")
 
