@@ -1,41 +1,39 @@
 #include "MapReduceFramework.h"
 #include <cstdio>
+#include <string>
 #include <array>
 #include <unistd.h>
-#include <fstream>
-#include <iostream>
-#include <random>
-
 #include <gtest/gtest.h>
+#include <random>
+#include <fstream>
 
-static const int REPEATS = 10000;
-static const int DEADLOCK_REPEATS = 1000000;
+static const int REPEATS = 5000; // TODO Change to bigger
+static const int DEADLOCK_REPEATS = 5000; // TODO Change to bigger
+static const int RANDOM_REPEATS = 5000; // TODO Change to bigger
 
-static const int RANDOM_REPEATS = 2000;
+pthread_mutex_t kv2ResourcesMutex = PTHREAD_MUTEX_INITIALIZER;
 
-pthread_mutex_t k2ResourcesMutex = PTHREAD_MUTEX_INITIALIZER;
 
 class VString : public V1
 {
 public:
-	VString(std::string content) : content(content) {}
-
+	explicit VString(std::string content) : content(std::move(content)) {}
 	std::string content;
 };
 
 class KChar : public K2, public K3
 {
 public:
-	KChar(char c) : c(c) {}
+	explicit KChar(char c) : c(c) {}
 
-	virtual bool operator<(const K2 &other) const
+	bool operator<(const K2 &other) const override
 	{
-		return c < static_cast<const KChar &>(other).c;
+		return c < dynamic_cast<const KChar &>(other).c;
 	}
 
-	virtual bool operator<(const K3 &other) const
+	bool operator<(const K3 &other) const override
 	{
-		return c < static_cast<const KChar &>(other).c;
+		return c < dynamic_cast<const KChar &>(other).c;
 	}
 
 	char c;
@@ -44,9 +42,8 @@ public:
 class VCount : public V2, public V3
 {
 public:
-	VCount(unsigned int count) : count(count) {}
-
-	unsigned int count;
+	explicit VCount(int count) : count(count) {}
+	int count;
 };
 
 class CounterClient : public MapReduceClient
@@ -76,61 +73,71 @@ public:
 		}
 	}
 
-	void map(const K1 *key, const V1 *value, void *context) const
+	void map(const K1 *key, const V1 *value, void *context) const override
 	{
 		(void)key;
-		std::array<unsigned int, 256> counts;
+		std::array<int, 256> counts{};
 		counts.fill(0);
-		for (const char &c : static_cast<const VString *>(value)->content)
+		for (const char &c : dynamic_cast<const VString *>(value)->content)
 		{
 			counts[(unsigned char)c]++;
 		}
 
-		for (int i = 0; i < 256; ++i)
+		for (unsigned int i = 0; i < 256; ++i)
 		{
-			if (counts[i] == 0)
+			if (counts[(int)i] == 0)
 				continue;
 
-			KChar *k2 = new KChar(i);
-			VCount *v2 = new VCount(counts[i]);
-			pthread_mutex_lock(&k2ResourcesMutex);
+			auto k2 = new KChar(i);
+			auto v2 = new VCount(counts[(int)i]);
+
+			pthread_mutex_lock(&kv2ResourcesMutex); // Getting into the critical section!
 			resourcesK2.emplace_back(k2);
 			resourcesV2.emplace_back(v2);
-			pthread_mutex_unlock(&k2ResourcesMutex);
+			pthread_mutex_unlock(&kv2ResourcesMutex); // Get out!
+
 			emit2(k2, v2, context);
 		}
 	}
 
-	void reduce(const K2 *key, const std::vector<V2 *> &values, void *context) const
-	{
-		const char c = static_cast<const KChar *>(key)->c;
-		unsigned int count = 0;
-		for (V2 *val : values)
-		{
-			count += static_cast<const VCount *>(val)->count;
-		}
-		KChar *k3 = new KChar(c);
-		VCount *v3 = new VCount(count);
-		emit3(k3, v3, context);
-	}
+    void reduce(const IntermediateVec* pairs, void* context) const override
+    {
+        const char c = dynamic_cast<const KChar*>(pairs->at(0).first)->c;
+        int count = 0;
+        for(const IntermediatePair& pair: *pairs) {
+            count += dynamic_cast<const VCount*>(pair.second)->count;
+        }
+
+        auto k3 = new KChar(c);
+        auto v3 = new VCount(count);
+
+        emit3(k3, v3, context);
+    }
 };
+
 
 TEST(Test1, waitAndCloseTest)
 {
-
 	CounterClient client;
+
 	auto s1 = new VString("This string is full of characters");
 	auto s2 = new VString("Multithreading is awesome");
 	auto s3 = new VString("conditions are race bad");
+
 	client.inputVec.push_back({nullptr, s1});
 	client.inputVec.push_back({nullptr, s2});
 	client.inputVec.push_back({nullptr, s3});
-	JobState state;
-	JobState last_state = {UNDEFINED_STAGE, 0};
-	JobHandle job = startMapReduceJob(client, client.inputVec, client.outputVec, 3);
-	getJobState(job, &state);
+
+    const int NUM_OF_THREADS = 3;
+
+	JobHandle job = startMapReduceJob(client, client.inputVec, client.outputVec, NUM_OF_THREADS);
 	waitForJob(job);
 
+    JobState state;
+    getJobState(job, &state);
+
+//    EXPECT_EQ(state.stage, SHUFFLE_STAGE);
+//    EXPECT_EQ(state.percentage, 100);
 	// Should work without system error, since we are supposed to check if join has already been called.
 	closeJobHandle(job);
 }
@@ -147,7 +154,8 @@ TEST(Test2, errorMessageTest)
 	ASSERT_EXIT(startMapReduceJob(client, client.inputVec, client.outputVec, 20000000),
 				::testing::ExitedWithCode(1),
 				::testing::MatchesRegex("system error: .*\n"))
-		<< "When starting too many threads, thread creation should fail, causing program to exit with code 1 and print an error";
+		<< "When starting too many threads, thread creation should fail, "
+                            "causing program to exit with code 1 and print an error";
 }
 
 TEST(Test3, outputTest)
@@ -182,7 +190,6 @@ TEST(Test3, outputTest)
 	last_state = state;
 	while (!(state.stage == REDUCE_STAGE && state.percentage == 100.0))
 	{
-
 		if (last_state.stage != state.stage || last_state.percentage != state.percentage)
 		{
 			printf("stage %d, %f%% \n", state.stage, state.percentage);
@@ -312,10 +319,12 @@ TEST(Test3, outputTest)
 			FAIL() << "The key " << c << " with value " << count << "Does not exist!" << std::endl;
 		}
 	}
-	if (expectedOutput.size() > 0)
+	if (!expectedOutput.empty())
 	{
 		auto iter = expectedOutput.begin();
-		FAIL() << "Your program has missed " << expectedOutput.size() << " letters, the first letter you missed is: " << iter->first << " whose count should be " << iter->second;
+		FAIL() << "Your program has missed " << expectedOutput.size()
+		<< " letters, the first letter you missed is: " << iter->first
+		<< " whose count should be " << iter->second;
 	}
 }
 
@@ -376,12 +385,12 @@ TEST(Test5, deadlockTest)
 		client.inputVec.push_back({nullptr, s2});
 		client.inputVec.push_back({nullptr, s3});
 		JobState state;
-		JobState last_state = {UNDEFINED_STAGE, 0};
+//		JobState last_state = {UNDEFINED_STAGE, 0};
 		JobHandle job = startMapReduceJob(client, client.inputVec, client.outputVec, 3);
 		getJobState(job, &state);
 		while (state.stage != REDUCE_STAGE || state.percentage != 100.0)
 		{
-			last_state = state;
+//			last_state = state;
 			getJobState(job, &state);
 		}
 		closeJobHandle(job);
@@ -516,10 +525,10 @@ void randbody(int iterations)
 TEST(Test6, randomTest)
 {
 	EXPECT_EXIT(randbody(RANDOM_REPEATS), ::testing::KilledBySignal(24), ::testing::MatchesRegex(""));
-	// TODO  If you fail this test, comment the line above and uncomment the line below to see what exit code you failed with more easily.
+	// If you fail this test, comment the line above and uncomment the line below to see what exit code you failed with more easily.
 	//  The task should be killed by signal 24 (SIGXCPU) which means the cpu time limit was exceeded. That should be the only reason that
 	//  the task dies. This should happen only after more than 100 iterations. Running sanitizer will slow the program down
 	//  a lot and could cause a false positive.
 	//  Meant to be run on aquarium computers since on private computers you probably won't ever get the kill signal.
-	//    randbody(RANDOM_REPEATS);
+	// randbody(RANDOM_REPEATS);
 }
